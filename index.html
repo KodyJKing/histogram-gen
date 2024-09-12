@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Histogram Generator</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            height: 100vh;
+            margin: auto;
+
+            --bg-color: #f0f0f0;
+            --text-color: #333;
+
+            background-color: var(--bg-color);
+        }
+
+        canvas {
+            border: 1px solid var(--text-color);
+            cursor: grab;
+        }
+
+        input {
+            margin: 5px;
+        }
+
+        input[type="number"] {
+            width: 100px;
+        }
+
+        input[type="range"] {
+            width: 100px;
+        }
+    </style>
+</head>
+
+<body>
+
+    <h2>Histogram Generator</h2>
+
+    <canvas id="canvas"></canvas>
+
+    <div id="settings" onchange="updatePlot()">
+
+        <!-- Histogram settings -->
+        <label for="numBins">Number of bins</label>
+        <input type="number" id="numBins" value="100" min="1" max="100" step="1" placeholder="Number of bins">
+        <label for="numSamples">Number of samples</label>
+        <input type="number" id="numSamples" value="10000" min="1" max="100000" step="1"
+            placeholder="Number of samples">
+
+        <br>
+
+        <!-- Functions -->
+        <table>
+            <tr>
+                <td>
+                    <label for="sampleGenerator">Sample Gen</label>
+                </td>
+                <td>
+                    <textarea id="sampleFunc">log(u()) + log(u())</textarea>
+                </td>
+            </tr>
+            <tr>
+                <td>
+                    <label for="pdfGuess">Compare to</label>
+                </td>
+                <td>
+                    <textarea id="pdfGuess">-x * exp(x)</textarea>
+                </td>
+            </tr>
+        </table>
+    </div>
+
+    <script>
+
+        // Assumes fixed keys.
+        function packState(state) {
+            return Object.entries(state).map(([key, value]) => {
+                if (typeof value == 'number') {
+                    return parseFloat(value.toFixed(1))
+                } else {
+                    return value
+                }
+            })
+        }
+        function unpackState(encoded) {
+            const state = getFullInputState()
+            const keys = Object.keys(state)
+            const decoded = {}
+            encoded.forEach((value, i) => {
+                decoded[keys[i]] = value
+            })
+            return decoded
+        }
+
+        function getLink() {
+            const state = getFullInputState()
+            const json = JSON.stringify(packState(state))
+            const b64 = btoa(json)
+            return window.location.origin + window.location.pathname + '#' + b64
+        }
+
+        function copyLink() {
+            const link = getLink()
+            navigator.clipboard.writeText(link)
+        }
+
+        function importStateFromLink() {
+            if (!window.location.hash)
+                return
+            const b64 = window.location.hash.slice(1)
+            const state = unpackState(JSON.parse(atob(b64)))
+            setFullInputState(state)
+            updatePlot()
+        }
+        importStateFromLink()
+
+        function getFullInputState() {
+            const inputs = document.querySelectorAll('#settings input, #settings textarea')
+            const state = {}
+            inputs.forEach(input => {
+                const id = input.id
+                if (input.type == 'checkbox') {
+                    state[id] = input.checked
+                } else if (input.type == 'number' || input.type == 'range') {
+                    state[id] = parseFloat(input.value)
+                } else {
+                    state[id] = input.value
+                }
+            })
+            return state
+        }
+
+        function setFullInputState(state) {
+            const inputs = document.querySelectorAll('#settings input, #settings textarea')
+            inputs.forEach(input => {
+                const id = input.id
+                if (input.type == 'checkbox') {
+                    input.checked = state[id]
+                } else if (input.type == 'number' || input.type == 'range') {
+                    input.value = state[id]
+                } else {
+                    input.value = state[id]
+                }
+            })
+        }
+
+        function arrayMin(arr) {
+            return arr.reduce((min, p) => p < min ? p : min, arr[0])
+        }
+
+        function arrayMax(arr) {
+            return arr.reduce((max, p) => p > max ? p : max, arr[0])
+        }
+
+        function createHistogram(samples, numbBins) {
+            const min = arrayMin(samples)
+            const max = arrayMax(samples)
+            const binSize = (max - min) / numbBins
+            const bins = new Array(numbBins).fill(0)
+            const normalizingFactor = 1 / binSize / samples.length
+            samples.forEach(sample => {
+                const binIndex = Math.floor((sample - min) / binSize)
+                if (binIndex >= 0 && binIndex < numbBins)
+                    bins[binIndex] += 1 * normalizingFactor
+            })
+            return { bins, min, max, binSize }
+        }
+
+        function histogramBounds(histogram) {
+            const { min, max, bins, binSize } = histogram
+            const maxBin = arrayMax(bins)
+            return { xMin: min, xMax: max + binSize, yMin: 0, yMax: maxBin }
+        }
+
+        function generateSamples(func, numSamples) {
+            const samples = []
+            for (let i = 0; i < numSamples; i++) {
+                samples.push(func())
+            }
+            return samples
+        }
+
+        function mapToCanvas(x, y, bounds, width, height) {
+            const x0 = bounds.xMin
+            const x1 = bounds.xMax
+            const y0 = bounds.yMin
+            const y1 = bounds.yMax
+
+            const xCanvas = (x - x0) / (x1 - x0) * width
+            const yCanvas = height - (y - y0) / (y1 - y0) * height
+
+            return { x: xCanvas, y: yCanvas }
+        }
+
+        function plotHistogram(ctx, histogram, bounds) {
+            const W = ctx.canvas.width
+            const H = ctx.canvas.height
+
+            const { bins, min, max, binSize } = histogram
+            const binWidth = W / bins.length
+
+            const binMax = arrayMax(bins)
+
+            ctx.fillStyle = 'blue'
+            bins.forEach((bin, i) => {
+                let x = i * binWidth
+                let h = bin / binMax * H
+                ctx.fillRect(x, H, binWidth, -h)
+            })
+        }
+
+        function plotFunction(ctx, func, bounds) {
+            const W = ctx.canvas.width
+            const H = ctx.canvas.height
+
+            const x0 = bounds.xMin
+            const x1 = bounds.xMax
+            const y0 = bounds.yMin
+            const y1 = bounds.yMax
+
+            const dx = (x1 - x0) / W
+
+            ctx.beginPath()
+            for (let x = x0; x < x1; x += dx) {
+                const y = func(x)
+                const p = mapToCanvas(x, y, bounds, W, H)
+                if (x == x0)
+                    ctx.moveTo(p.x, p.y)
+                else
+                    ctx.lineTo(p.x, p.y)
+            }
+            ctx.stroke()
+        }
+
+        function createMathFunc(...paramsAndBody) {
+            const prolog = [Object.getOwnPropertyNames(Math).map(key => `const ${key} = Math.${key};`).join('\n'), "const u = () => Math.random();"].join('\n')
+            const params = paramsAndBody.slice(0, -1)
+            let body = paramsAndBody.slice(-1)[0]
+            if (body.indexOf('return') < 0)
+                body = 'return ' + body
+            return new Function(...params, prolog + body)
+        }
+
+        function updatePlot() {
+            const W = 800
+            const H = 600
+
+            canvas.width = W
+            canvas.height = H
+
+            const ctx = canvas.getContext('2d')
+
+            const sampleFunc = createMathFunc(document.getElementById('sampleFunc').value)
+            const pdfGuess = createMathFunc('x', document.getElementById('pdfGuess').value)
+
+            const numSamples = parseInt(document.getElementById('numSamples').value)
+            const numBins = parseInt(document.getElementById('numBins').value)
+
+            const samples = generateSamples(sampleFunc, numSamples)
+            const histogram = createHistogram(samples, numBins)
+
+            const bounds = histogramBounds(histogram)
+
+            // Update link
+            const link = getLink()
+            window.history.replaceState(null, '', link)
+
+            ctx.clearRect(0, 0, W, H)
+
+            plotHistogram(ctx, histogram, bounds)
+
+            ctx.strokeStyle = 'red'
+            ctx.lineWidth = 2
+            plotFunction(ctx, pdfGuess, bounds)
+        }
+
+        updatePlot()
+
+    </script>
+</body>
+
+</html>
